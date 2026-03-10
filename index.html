@@ -1,0 +1,91 @@
+﻿<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>출고 스캐너</title>
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
+    <style>
+        body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        #video { width: 100%; height: 75vh; object-fit: cover; }
+        #result-card { flex: 1; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.4rem; font-weight: bold; transition: 0.3s; }
+        .ready { background: #333; }
+        .sending { background: #10b981; }
+        .success { background: #000; }
+        .error { background: #dc2626; }
+    </style>
+</head>
+<body>
+    <video id="video"></video>
+    <div id="result-card" class="ready">카메라를 켜는 중...</div>
+
+    <script>
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
+        const codeReader = new ZXing.BrowserQRCodeReader();
+        const resultCard = document.getElementById('result-card');
+        let isProcessing = false;
+        let lastScanned = "";
+
+        async function startScanning() {
+            try {
+                // 아이폰용 고해상도 스트림 설정
+                const constraints = {
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        facingMode: { exact: "environment" }
+                    }
+                };
+                
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                const video = document.getElementById('video');
+                video.srcObject = stream;
+                video.play();
+
+                // 스트림을 직접 디코딩 시작
+                codeReader.decodeFromStream(stream, 'video', (result, err) => {
+                    if (result) handleScan(result.text);
+                });
+                
+                resultCard.innerText = "스캔 준비 완료";
+            } catch (err) {
+                resultCard.className = "error";
+                resultCard.innerText = "카메라 권한 오류/미지원";
+                console.error(err);
+            }
+        }
+
+        async function handleScan(text) {
+            if (isProcessing || text === lastScanned) return;
+            
+            isProcessing = true;
+            lastScanned = text;
+            
+            resultCard.className = "sending";
+            resultCard.innerText = "전송 중...";
+
+            try {
+                const response = await fetch(GOOGLE_SCRIPT_URL + "?text=" + encodeURIComponent(text));
+                if (response.ok) {
+                    resultCard.className = "success";
+                    resultCard.innerText = "✅ 성공!";
+                    setTimeout(() => { 
+                        isProcessing = false; 
+                        resultCard.className = "ready";
+                        resultCard.innerText = "다음 스캔...";
+                    }, 800);
+                } else {
+                    throw new Error("전송 실패");
+                }
+            } catch (err) {
+                resultCard.className = "error";
+                resultCard.innerText = "전송 오류";
+                isProcessing = false;
+                lastScanned = "";
+            }
+        }
+
+        window.onload = startScanning;
+    </script>
+</body>
+</html>
