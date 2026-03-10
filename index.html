@@ -1,14 +1,30 @@
-﻿<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>출고 스캐너</title>
-    <script src="https://unpkg.com/@zxing/library@latest"></script>
+    <title>QR Scan To Sheet</title>
+    <!-- WebAssembly 기반의 초고속 스캐너 엔진 로드 -->
+    <script src="https://unpkg.com/qr-scanner@1.4.2/qr-scanner.umd.min.js"></script>
     <style>
-        body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-        #video { width: 100%; height: 75vh; object-fit: cover; }
-        #result-card { flex: 1; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.4rem; font-weight: bold; transition: 0.3s; }
+        body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; font-family: sans-serif; }
+        
+        /* 카메라 화면 꽉 채우기 */
+        #video-container { position: relative; width: 100%; height: 75vh; overflow: hidden; }
+        #qr-video { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* 플래시 제어 버튼 (그림자 환경 대비) */
+        #flash-btn {
+            position: absolute; bottom: 20px; right: 20px;
+            background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(10px);
+            border: 2px solid white; color: white; border-radius: 50px;
+            padding: 12px 24px; font-size: 1.1rem; font-weight: bold; cursor: pointer;
+            display: none; /* 플래시 지원 안하는 기기면 숨김 */
+        }
+        
+        /* 상태 알림창 */
+        #result-card { flex: 1; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.5rem; font-weight: bold; text-align: center; transition: 0.2s; white-space: pre-wrap; }
+        
         .ready { background: #333; }
         .sending { background: #10b981; }
         .success { background: #000; }
@@ -16,76 +32,104 @@
     </style>
 </head>
 <body>
-    <video id="video"></video>
-    <div id="result-card" class="ready">카메라를 켜는 중...</div>
+
+    <div id="video-container">
+        <video id="qr-video"></video>
+        <button id="flash-btn">💡 플래시 켜기</button>
+    </div>
+    
+    <div id="result-card" class="ready">엔진 로딩 중...</div>
 
     <script>
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
-        const codeReader = new ZXing.BrowserQRCodeReader();
+        
+        const video = document.getElementById('qr-video');
         const resultCard = document.getElementById('result-card');
+        const flashBtn = document.getElementById('flash-btn');
+        
         let isProcessing = false;
         let lastScanned = "";
+        let qrScanner = null;
 
-        async function startScanning() {
-            try {
-                // 아이폰용 고해상도 스트림 설정
-                const constraints = {
-                    video: {
-                        width: { ideal: 1280 },
-                        height: { ideal: 720 },
-                        facingMode: { exact: "environment" }
-                    }
-                };
-                
-                const stream = await navigator.mediaDevices.getUserMedia(constraints);
-                const video = document.getElementById('video');
-                video.srcObject = stream;
-                video.play();
-
-                // 스트림을 직접 디코딩 시작
-                codeReader.decodeFromStream(stream, 'video', (result, err) => {
-                    if (result) handleScan(result.text);
-                });
-                
-                resultCard.innerText = "스캔 준비 완료";
-            } catch (err) {
-                resultCard.className = "error";
-                resultCard.innerText = "카메라 권한 오류/미지원";
-                console.error(err);
-            }
-        }
-
-        async function handleScan(text) {
+        // 초고속 스캔 처리 함수
+        async function handleScan(result) {
+            const text = result.data;
             if (isProcessing || text === lastScanned) return;
             
             isProcessing = true;
             lastScanned = text;
             
             resultCard.className = "sending";
-            resultCard.innerText = "전송 중...";
+            resultCard.innerText = "⏳ 전송 중...\n" + text;
 
             try {
                 const response = await fetch(GOOGLE_SCRIPT_URL + "?text=" + encodeURIComponent(text));
                 if (response.ok) {
                     resultCard.className = "success";
-                    resultCard.innerText = "✅ 성공!";
+                    resultCard.innerText = "✅ 저장 완료!";
+                    
+                    // 0.8초 후 다음 스캔 대기 (연속 스캔 속도 극대화)
                     setTimeout(() => { 
                         isProcessing = false; 
                         resultCard.className = "ready";
-                        resultCard.innerText = "다음 스캔...";
+                        resultCard.innerText = "다음 제품 스캔...";
                     }, 800);
                 } else {
-                    throw new Error("전송 실패");
+                    throw new Error("서버 오류");
                 }
             } catch (err) {
                 resultCard.className = "error";
-                resultCard.innerText = "전송 오류";
+                resultCard.innerText = "❌ 전송 실패";
                 isProcessing = false;
                 lastScanned = "";
             }
         }
 
-        window.onload = startScanning;
+        // 스캐너 엔진 초기화
+        qrScanner = new QrScanner(
+            video,
+            result => handleScan(result),
+            {
+                // Web Worker 사용으로 메인 스레드 부하 감소 (속도 대폭 향상)
+                calculateScanRegion: video => ({
+                    x: 0, y: 0, width: video.videoWidth, height: video.videoHeight
+                }),
+                preferredCamera: 'environment', // 후면 카메라 강제
+                maxScansPerSecond: 30, // 1초에 30번 패턴 분석 (초고속)
+            }
+        );
+
+        // 스캐너 시작
+        qrScanner.start().then(() => {
+            resultCard.className = "ready";
+            resultCard.innerText = "스캔 준비 완료";
+
+            // 아이폰 후면 카메라의 플래시(Torch) 기능이 지원되는지 확인
+            qrScanner.hasFlash().then(hasFlash => {
+                if (hasFlash) {
+                    flashBtn.style.display = "block";
+                    let flashOn = false;
+                    flashBtn.addEventListener('click', () => {
+                        flashOn = !flashOn;
+                        if (flashOn) {
+                            qrScanner.turnFlashOn();
+                            flashBtn.innerText = "💡 플래시 끄기";
+                            flashBtn.style.background = "rgba(255,255,255,0.8)";
+                            flashBtn.style.color = "black";
+                        } else {
+                            qrScanner.turnFlashOff();
+                            flashBtn.innerText = "💡 플래시 켜기";
+                            flashBtn.style.background = "rgba(255,255,255,0.2)";
+                            flashBtn.style.color = "white";
+                        }
+                    });
+                }
+            });
+        }).catch(err => {
+            resultCard.className = "error";
+            resultCard.innerText = "카메라 권한을 허용해주세요.";
+        });
+
     </script>
 </body>
 </html>
