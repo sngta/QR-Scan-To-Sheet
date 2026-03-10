@@ -3,108 +3,182 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>QR Scan To Sheet</title>
-    <!-- WebAssembly 기반의 초고속 스캐너 엔진 로드 -->
+    <title>QR Scan to sheet by SNGTA</title>
+    <!-- 고성능 WebAssembly 엔진 로드 -->
     <script src="https://unpkg.com/qr-scanner@1.4.2/qr-scanner.umd.min.js"></script>
     <style>
-        body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; font-family: sans-serif; }
+        /* 화면 기본 설정 */
+        body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; font-family: -apple-system, sans-serif; }
         
-        /* 카메라 화면 꽉 채우기 */
-        #video-container { position: relative; width: 100%; height: 75vh; overflow: hidden; }
+        /* 1. 카메라 영상 영역 */
+        #video-container { position: relative; width: 100%; height: 75vh; background: #111; }
         #qr-video { width: 100%; height: 100%; object-fit: cover; }
         
-        /* 플래시 제어 버튼 (그림자 환경 대비) */
+        /* 2. 플래시 버튼 */
         #flash-btn {
             position: absolute; bottom: 20px; right: 20px;
-            background: rgba(255, 255, 255, 0.2); backdrop-filter: blur(10px);
-            border: 2px solid white; color: white; border-radius: 50px;
-            padding: 12px 24px; font-size: 1.1rem; font-weight: bold; cursor: pointer;
-            display: none; /* 플래시 지원 안하는 기기면 숨김 */
+            background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(5px);
+            border: 2px solid #fff; color: #fff; border-radius: 30px;
+            padding: 12px 20px; font-size: 1rem; font-weight: bold; cursor: pointer;
+            display: none;
+            z-index: 10;
         }
         
-        /* 상태 알림창 */
-        #result-card { flex: 1; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.5rem; font-weight: bold; text-align: center; transition: 0.2s; white-space: pre-wrap; }
+        /* 3. 하단 상태 알림창 */
+        #result-card { 
+            flex: 1; display: flex; align-items: center; justify-content: center; 
+            color: #fff; font-size: 1.4rem; font-weight: bold; text-align: center; 
+            transition: background-color 0.2s; white-space: pre-wrap; line-height: 1.4;
+        }
         
+        /* 상태별 테마 색상 */
         .ready { background: #333; }
-        .sending { background: #10b981; }
-        .success { background: #000; }
-        .error { background: #dc2626; }
+        .sending { background: #10b981; } /* 전송중: 맑은 녹색 */
+        .success { background: #000; }    /* 성공: 검정 */
+        .error { background: #dc2626; }   /* 에러 및 중복경고: 강렬한 빨강 */
     </style>
 </head>
 <body>
 
+    <!-- 카메라 화면 및 조작부 -->
     <div id="video-container">
         <video id="qr-video"></video>
         <button id="flash-btn">💡 플래시 켜기</button>
     </div>
     
-    <div id="result-card" class="ready">엔진 로딩 중...</div>
+    <!-- 상태 안내부 -->
+    <div id="result-card" class="ready">카메라 로딩 중...</div>
 
     <script>
+        // ★ 웹 앱(구글 시트) URL 입력 ★
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
         
         const video = document.getElementById('qr-video');
         const resultCard = document.getElementById('result-card');
         const flashBtn = document.getElementById('flash-btn');
         
+        // 상태 제어 변수
         let isProcessing = false;
         let lastScanned = "";
+        let isDuplicateAlerted = false; // [추가] 중복 알림 폭탄 방지용 자물쇠
         let qrScanner = null;
 
-        // 초고속 스캔 처리 함수
+        // 🟢 정상 스캔 소리 (맑고 높은 삐- 소리)
+        function playSuccessBeep() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'sine'; 
+                osc.frequency.setValueAtTime(880, ctx.currentTime); // 880Hz 고음
+                gain.gain.setValueAtTime(0.1, ctx.currentTime);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.1); 
+            } catch (e) {}
+        }
+
+        // 🔴 중복/에러 소리 (낮고 둔탁한 띡- 소리)
+        function playErrorBeep() {
+            try {
+                const ctx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.type = 'square'; // 거친 소리 파형
+                osc.frequency.setValueAtTime(300, ctx.currentTime); // 300Hz 저음
+                gain.gain.setValueAtTime(0.05, ctx.currentTime);
+                osc.start();
+                osc.stop(ctx.currentTime + 0.2); 
+            } catch (e) {}
+        }
+
+        // 스캔 로직
         async function handleScan(result) {
             const text = result.data;
-            if (isProcessing || text === lastScanned) return;
             
+            // 1. 현재 전송 중이면 무시
+            if (isProcessing) return;
+            
+            // 2.[추가] 방금 찍은 QR과 동일한 경우 (중복 처리)
+            if (text === lastScanned) {
+                // 아직 경고를 안 했다면 딱 한 번만 경고함
+                if (!isDuplicateAlerted) {
+                    playErrorBeep(); // 둔탁한 경고음 재생
+                    resultCard.className = "error";
+                    resultCard.innerText = "⚠️ 중복 스캔!\n방금 전송한 제품입니다.";
+                    isDuplicateAlerted = true; // 경고했음을 기록 (폭탄 방지)
+                    
+                    // 2초 뒤에 화면을 다시 '준비' 상태로 돌려놓음
+                    setTimeout(() => {
+                        if (!isProcessing && lastScanned === text) {
+                            resultCard.className = "ready";
+                            resultCard.innerText = "다른 제품을 스캔해주세요.";
+                        }
+                    }, 2000);
+                }
+                return; // 구글 시트로 전송하지 않고 여기서 종료
+            }
+            
+            // 3. 새로운 QR코드인 경우 정상 처리
             isProcessing = true;
             lastScanned = text;
+            isDuplicateAlerted = false; // 새로운 걸 찍었으니 중복 자물쇠 초기화
+            
+            playSuccessBeep(); // 맑은 성공음 재생
             
             resultCard.className = "sending";
             resultCard.innerText = "⏳ 전송 중...\n" + text;
 
             try {
                 const response = await fetch(GOOGLE_SCRIPT_URL + "?text=" + encodeURIComponent(text));
+                
                 if (response.ok) {
                     resultCard.className = "success";
                     resultCard.innerText = "✅ 저장 완료!";
                     
-                    // 0.8초 후 다음 스캔 대기 (연속 스캔 속도 극대화)
                     setTimeout(() => { 
                         isProcessing = false; 
                         resultCard.className = "ready";
                         resultCard.innerText = "다음 제품 스캔...";
                     }, 800);
                 } else {
-                    throw new Error("서버 오류");
+                    throw new Error("서버 연동 실패");
                 }
             } catch (err) {
+                playErrorBeep(); // 전송 실패 시에도 에러음 재생
                 resultCard.className = "error";
-                resultCard.innerText = "❌ 전송 실패";
+                resultCard.innerText = "❌ 전송 실패 (재시도 요망)";
                 isProcessing = false;
-                lastScanned = "";
+                lastScanned = ""; 
             }
         }
 
-        // 스캐너 엔진 초기화
+        // 스캐너 엔진 세팅
         qrScanner = new QrScanner(
             video,
             result => handleScan(result),
             {
-                // Web Worker 사용으로 메인 스레드 부하 감소 (속도 대폭 향상)
-                calculateScanRegion: video => ({
-                    x: 0, y: 0, width: video.videoWidth, height: video.videoHeight
-                }),
-                preferredCamera: 'environment', // 후면 카메라 강제
-                maxScansPerSecond: 30, // 1초에 30번 패턴 분석 (초고속)
+                preferredCamera: 'environment', 
+                maxScansPerSecond: 30,          
+                highlightScanRegion: true,      
+                highlightCodeOutline: true      
             }
         );
 
-        // 스캐너 시작
+        // 스캐너 가동
         qrScanner.start().then(() => {
             resultCard.className = "ready";
-            resultCard.innerText = "스캔 준비 완료";
+            resultCard.innerText = "화면을 한 번 터치해주세요.\n(소리 켜기)";
 
-            // 아이폰 후면 카메라의 플래시(Torch) 기능이 지원되는지 확인
+            // 오디오 권한을 위해 첫 터치 유도
+            document.body.addEventListener('click', function unlockAudio() {
+                resultCard.innerText = "스캔 준비 완료";
+                document.body.removeEventListener('click', unlockAudio);
+            }, { once: true });
+
             qrScanner.hasFlash().then(hasFlash => {
                 if (hasFlash) {
                     flashBtn.style.display = "block";
@@ -114,13 +188,13 @@
                         if (flashOn) {
                             qrScanner.turnFlashOn();
                             flashBtn.innerText = "💡 플래시 끄기";
-                            flashBtn.style.background = "rgba(255,255,255,0.8)";
-                            flashBtn.style.color = "black";
+                            flashBtn.style.background = "rgba(255, 255, 255, 0.9)";
+                            flashBtn.style.color = "#000";
                         } else {
                             qrScanner.turnFlashOff();
                             flashBtn.innerText = "💡 플래시 켜기";
-                            flashBtn.style.background = "rgba(255,255,255,0.2)";
-                            flashBtn.style.color = "white";
+                            flashBtn.style.background = "rgba(0, 0, 0, 0.6)";
+                            flashBtn.style.color = "#fff";
                         }
                     });
                 }
@@ -129,7 +203,6 @@
             resultCard.className = "error";
             resultCard.innerText = "카메라 권한을 허용해주세요.";
         });
-
     </script>
 </body>
 </html>
