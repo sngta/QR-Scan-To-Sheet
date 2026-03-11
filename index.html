@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SNGTA 초고속 스캐너</title>
+    <title>QR SC</title>
     <script src="https://unpkg.com/@zxing/library@latest"></script>
     <style>
         body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
@@ -21,24 +21,41 @@
 
     <script>
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
-        const codeReader = new ZXing.BrowserQRCodeReader();
-        const resultCard = document.getElementById('result-card');
-        
-        let isProcessing = false;
-        let lastScanned = "";
+// 1. 다중 포맷 리더기로 변경 (Data Matrix 등 현장 바코드 모두 대응)
+const codeReader = new ZXing.BrowserMultiFormatReader();
+const resultCard = document.getElementById('result-card');
 
-        async function startScanning() {
-            try {
-                const devices = await codeReader.listVideoInputDevices();
-                const deviceId = devices.length > 0 ? devices[devices.length - 1].deviceId : undefined;
-                codeReader.decodeFromVideoDevice(deviceId, 'video', (result, err) => {
-                    if (result) handleScan(result.text);
-                });
-            } catch (err) {
-                resultCard.innerText = "카메라 권한 오류";
-                resultCard.className = "error";
+let isProcessing = false;
+let lastScanned = "";
+
+async function startScanning() {
+    try {
+        // 2. 카메라 제약 조건 (Constraints) 튜닝
+        // 고해상도(1080p)를 요청하고, 후면 카메라 강제, 자동 초점 요청
+        const constraints = {
+            video: {
+                facingMode: "environment", // 후면 카메라
+                width: { ideal: 1920 },    // 고밀도 인식을 위한 고해상도
+                height: { ideal: 1080 },
+                advanced: [{ focusMode: "continuous" }] // 지원하는 기기에서 연속 초점 활성화
             }
-        }
+        };
+
+        // 기존의 단순 deviceId 기반 호출 대신, 최적화된 constraints로 스트림을 가져와 디코딩
+        // (이 방식이 최신 모바일 브라우저에서 카메라 자원을 더 잘 끌어냅니다)
+        codeReader.decodeFromConstraints(constraints, 'video', (result, err) => {
+            if (result) {
+                handleScan(result.text);
+            }
+            // err는 스캔을 찾는 중 지속적으로 발생하므로 무시합니다.
+        });
+
+    } catch (err) {
+        console.error(err);
+        resultCard.innerText = "카메라 권한 또는 해상도 오류";
+        resultCard.className = "error";
+    }
+}
 
         async function handleScan(text) {
             // 중복 스캔 시 시각적 경고
