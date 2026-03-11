@@ -2,35 +2,20 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>QR Native Scan by Sngta</title>
+    <!-- PWA 최적화: 전체화면, 확대 방지 -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>SNGTA PRO 스캐너</title>
     <style>
-        body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; font-family: -apple-system, sans-serif; }
+        body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; font-family: -apple-system, sans-serif; user-select: none; }
         
-        /* 1. 카메라 영상 및 윤곽선 캔버스 영역 */
-        #video-container { position: relative; width: 100%; height: 75vh; background: #111; overflow: hidden; }
-        /* 비디오와 캔버스를 완벽히 포개기 위한 설정 */
-        #qr-video, #qr-canvas { 
-            position: absolute; top: 0; left: 0; 
-            width: 100%; height: 100%; object-fit: cover; 
-        }
-        #qr-canvas { z-index: 5; pointer-events: none; } /* 비디오 위에 윤곽선을 그릴 투명 도화지 */
+        /* 카메라 영역: 1.5배 디지털 줌 효과로 멀리 있는 QR 조준 최적화 */
+        #video-container { position: relative; width: 100%; height: 75vh; background: #111; overflow: hidden; display: flex; justify-content: center; align-items: center; }
+        #qr-video { width: 100%; height: 100%; object-fit: cover; transform: scale(1.5); transform-origin: center; }
         
-        /* 2. 플래시 버튼 */
-        #flash-btn {
-            position: absolute; bottom: 20px; right: 20px;
-            background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(5px);
-            border: 2px solid #fff; color: #fff; border-radius: 30px;
-            padding: 12px 20px; font-size: 1rem; font-weight: bold; cursor: pointer;
-            display: none; z-index: 10;
-        }
-        
-        /* 3. 하단 상태 알림창 */
-        #result-card { 
-            flex: 1; display: flex; align-items: center; justify-content: center; 
-            color: #fff; font-size: 1.4rem; font-weight: bold; text-align: center; 
-            transition: background-color 0.2s; white-space: pre-wrap; line-height: 1.4;
-        }
+        /* 하단 상태 알림창 */
+        #result-card { flex: 1; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.5rem; font-weight: bold; text-align: center; transition: background-color 0.1s; white-space: pre-wrap; line-height: 1.4; z-index: 10; }
         
         .ready { background: #333; }
         .sending { background: #10b981; }
@@ -42,80 +27,44 @@
 
     <div id="video-container">
         <video id="qr-video" playsinline autoplay muted></video>
-        <canvas id="qr-canvas"></canvas> <!-- QR 인식 시 테두리를 그릴 캔버스 -->
-        <button id="flash-btn">💡 플래시 켜기</button>
     </div>
     
-    <div id="result-card" class="ready">엔진 로딩 중...</div>
+    <div id="result-card" class="ready">카메라 켜는 중...</div>
 
     <script>
-        // ★ 웹 앱(구글 시트) URL 입력 ★
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
         
         const video = document.getElementById('qr-video');
-        const canvas = document.getElementById('qr-canvas');
-        const ctx = canvas.getContext('2d');
         const resultCard = document.getElementById('result-card');
-        const flashBtn = document.getElementById('flash-btn');
         
         let isProcessing = false;
         let lastScanned = "";
-        let isDuplicateAlerted = false;
-        let videoTrack = null;
+        let uiResetTimer = null;
 
-        // 🔊 오디오 피드백 함수들
-        function playSuccessBeep() {
-            try {
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                const osc = audioCtx.createOscillator();
-                const gain = audioCtx.createGain();
-                osc.connect(gain); gain.connect(audioCtx.destination);
-                osc.type = 'sine'; osc.frequency.setValueAtTime(880, audioCtx.currentTime); 
-                gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
-                osc.start(); osc.stop(audioCtx.currentTime + 0.1); 
-            } catch (e) {}
-        }
-
-        function playErrorBeep() {
-            try {
-                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-                const osc = audioCtx.createOscillator();
-                const gain = audioCtx.createGain();
-                osc.connect(gain); gain.connect(audioCtx.destination);
-                osc.type = 'square'; osc.frequency.setValueAtTime(300, audioCtx.currentTime); 
-                gain.gain.setValueAtTime(0.05, audioCtx.currentTime);
-                osc.start(); osc.stop(audioCtx.currentTime + 0.2); 
-            } catch (e) {}
-        }
-
-        // 🚀 구글 시트 전송 로직
-        async function handleScan(text) {
-            if (isProcessing) return;
-            
-            // 중복 스캔 시
-            if (text === lastScanned) {
-                if (!isDuplicateAlerted) {
-                    playErrorBeep(); 
-                    resultCard.className = "error";
-                    resultCard.innerText = "⚠️ 중복 스캔!\n방금 전송한 제품입니다.";
-                    isDuplicateAlerted = true; 
-                    
-                    setTimeout(() => {
-                        if (!isProcessing && lastScanned === text) {
-                            resultCard.className = "ready";
-                            resultCard.innerText = "다른 제품을 스캔해주세요.";
-                        }
-                    }, 2000);
+        // 🚀 스캔 데이터 처리 로직
+        async function handleDetection(text) {
+            // QR이 인식될 때마다 UI 초기화 타이머를 갱신 (카메라를 치우면 1.5초 뒤 ready 상태로 복귀)
+            clearTimeout(uiResetTimer);
+            uiResetTimer = setTimeout(() => {
+                if (!isProcessing) {
+                    resultCard.className = "ready";
+                    resultCard.innerText = "QR 코드를 비춰주세요";
                 }
+            }, 1500);
+
+            // 현재 전송 중이면 무시
+            if (isProcessing) return;
+
+            // [수정됨] 중복 스캔 시: 대고 있는 동안 계속해서 에러창 유지
+            if (text === lastScanned) {
+                resultCard.className = "error";
+                resultCard.innerText = "⚠️ 중복 스캔!\n방금 전송한 제품입니다.";
                 return; 
             }
-            
-            // 새로운 스캔 시
+
+            // 새로운 QR코드 전송 시작
             isProcessing = true;
             lastScanned = text;
-            isDuplicateAlerted = false; 
-            
-            playSuccessBeep(); 
             
             resultCard.className = "sending";
             resultCard.innerText = "⏳ 전송 중...\n" + text;
@@ -125,112 +74,74 @@
                 if (response.ok) {
                     resultCard.className = "success";
                     resultCard.innerText = "✅ 저장 완료!";
-                    setTimeout(() => { 
-                        isProcessing = false; 
-                        resultCard.className = "ready";
-                        resultCard.innerText = "다음 제품 스캔...";
-                    }, 800);
-                } else throw new Error("서버 오류");
+                } else {
+                    throw new Error("서버 오류");
+                }
             } catch (err) {
-                playErrorBeep(); 
                 resultCard.className = "error";
                 resultCard.innerText = "❌ 전송 실패 (재시도 요망)";
-                isProcessing = false;
-                lastScanned = ""; 
+                lastScanned = ""; // 에러 시 다시 찍을 수 있게 초기화
+            } finally {
+                // 0.8초 쿨타임 후 다음 스캔 허용
+                setTimeout(() => { isProcessing = false; }, 800);
             }
         }
 
-        // 🧠 네이티브 하드웨어 스캔 엔진 가동
-        async function startNativeScanner() {
-            // 1. 아이폰(iOS 17+)이 BarcodeDetector를 지원하는지 검사
+        // 🧠 네이티브 하드웨어 스캐너 가동
+        async function startScanner() {
             if (!('BarcodeDetector' in window)) {
                 resultCard.className = "error";
-                resultCard.innerText = "이 브라우저는 네이티브 스캔을 지원하지 않습니다.\niOS 17 이상으로 업데이트 해주세요.";
+                resultCard.innerText = "기기 설정에서\nShape Detection API를 켜주세요.";
                 return;
             }
 
             const barcodeDetector = new BarcodeDetector({ formats: ['qr_code'] });
 
             try {
-                // 2. 고해상도 후면 카메라 켜기
+                // 작고 멀리 있는 QR을 잡기 위해 FHD(1080p) 이상의 고해상도 스트림 강제 요청
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+                    video: { 
+                        facingMode: 'environment', 
+                        width: { ideal: 1920 }, 
+                        height: { ideal: 1080 },
+                        advanced: [{ focusMode: "continuous" }] // 자동 초점 최적화
+                    }
                 });
                 video.srcObject = stream;
-                videoTrack = stream.getVideoTracks()[0];
 
-                // 3. 플래시(Torch) 지원 여부 확인 및 버튼 연결
-                const capabilities = videoTrack.getCapabilities();
-                if (capabilities.torch) {
-                    flashBtn.style.display = "block";
-                    let flashOn = false;
-                    flashBtn.addEventListener('click', async () => {
-                        flashOn = !flashOn;
-                        await videoTrack.applyConstraints({ advanced: [{ torch: flashOn }] });
-                        flashBtn.innerText = flashOn ? "💡 플래시 끄기" : "💡 플래시 켜기";
-                        flashBtn.style.background = flashOn ? "rgba(255, 255, 255, 0.9)" : "rgba(0, 0, 0, 0.6)";
-                        flashBtn.style.color = flashOn ? "#000" : "#fff";
-                    });
-                }
+                // 비디오 프레임이 들어올 때마다 검사 (requestVideoFrameCallback 사용)
+                const scanFrame = async () => {
+                    if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                        try {
+                            const barcodes = await barcodeDetector.detect(video);
+                            if (barcodes.length > 0) {
+                                handleDetection(barcodes[0].rawValue);
+                            }
+                        } catch (e) {
+                            // 프레임 분석 오류 무시
+                        }
+                    }
+                    // 다음 비디오 프레임이 렌즈에 들어오면 다시 호출 (발열 최소화, 효율 극대화)
+                    if ('requestVideoFrameCallback' in video) {
+                        video.requestVideoFrameCallback(scanFrame);
+                    } else {
+                        requestAnimationFrame(scanFrame);
+                    }
+                };
 
-                // 비디오 재생 시작 후, 화면 크기에 맞춰 캔버스 맞추기
                 video.addEventListener('play', () => {
-                    canvas.width = video.videoWidth;
-                    canvas.height = video.videoHeight;
-                    requestAnimationFrame(detectQR);
+                    resultCard.className = "ready";
+                    resultCard.innerText = "QR 코드를 비춰주세요";
+                    scanFrame(); // 스캔 루프 시작
                 });
-
-                // 사용자 첫 터치 유도 (소리 권한 해제)
-                resultCard.className = "ready";
-                resultCard.innerText = "화면을 한 번 터치해주세요.\n(소리 켜기)";
-                document.body.addEventListener('click', function unlock() {
-                    resultCard.innerText = "스캔 준비 완료 (하드웨어 가속 중)";
-                    document.body.removeEventListener('click', unlock);
-                }, { once: true });
 
             } catch (error) {
                 resultCard.className = "error";
                 resultCard.innerText = "카메라 권한을 허용해주세요.";
             }
-
-            // 4. 초고속 무한 반복 스캔 루프 (애플 신경망 엔진 사용)
-            async function detectQR() {
-                try {
-                    const barcodes = await barcodeDetector.detect(video);
-                    
-                    // 캔버스 초기화
-                    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-                    if (barcodes.length > 0) {
-                        const qr = barcodes[0]; // 첫 번째 발견된 QR
-                        
-                        // 🟩 QR 테두리 그리기 (녹색 윤곽선)
-                        if (qr.cornerPoints && qr.cornerPoints.length === 4) {
-                            ctx.beginPath();
-                            ctx.moveTo(qr.cornerPoints[0].x, qr.cornerPoints[0].y);
-                            for (let i = 1; i < 4; i++) {
-                                ctx.lineTo(qr.cornerPoints[i].x, qr.cornerPoints[i].y);
-                            }
-                            ctx.closePath();
-                            ctx.lineWidth = 6; // 선 두께
-                            ctx.strokeStyle = "#10b981"; // 에메랄드 녹색
-                            ctx.stroke();
-                        }
-
-                        // 인식된 텍스트 처리
-                        handleScan(qr.rawValue);
-                    }
-                } catch (e) {
-                    // 비디오 프레임이 준비 안 됐을 때 나는 에러 무시
-                }
-                
-                // 모니터 주사율에 맞춰(초당 60번) 끊임없이 다음 프레임 탐색
-                requestAnimationFrame(detectQR);
-            }
         }
 
-        // 앱 실행
-        window.onload = startNativeScanner;
+        window.onload = startScanner;
     </script>
 </body>
 </html>
