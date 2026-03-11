@@ -2,22 +2,14 @@
 <html lang="ko">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>SNGTA WASM 스캐너</title>
-    <!-- 가장 안정적인 zxing-cpp WASM 래퍼 라이브러리 로드 -->
-    <script src="https://unpkg.com/qr-scanner@1.4.2/qr-scanner.umd.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SNGTA 초고속 스캐너</title>
+    <!-- Zxing 라이브러리 불러오기 -->
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
     <style>
-        body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; font-family: -apple-system, sans-serif; user-select: none; }
-        
-        /* 💡 핵심: 화면을 2배 확대하여, 작업자가 폰을 멀리 떨어뜨려도(초점 확보) QR이 크게 보이게 함 */
-        #video-container { position: relative; width: 100%; height: 75vh; background: #111; overflow: hidden; display: flex; justify-content: center; align-items: center; }
-        #qr-video { width: 100%; height: 100%; object-fit: cover; transform: scale(2.0); transform-origin: center; }
-        
-        /* 조준을 돕기 위한 중앙 가이드라인 (선택 사항, 거슬리면 삭제 가능) */
-        .aim-box { position: absolute; width: 150px; height: 150px; border: 2px solid rgba(255,255,255,0.3); border-radius: 10px; pointer-events: none; z-index: 5; }
-        
-        #result-card { flex: 1; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.5rem; font-weight: bold; text-align: center; transition: background-color 0.1s; white-space: pre-wrap; line-height: 1.4; z-index: 10; }
-        
+        body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+        #video { width: 100%; height: 70vh; object-fit: cover; }
+        #result-card { flex: 1; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.5rem; font-weight: bold; padding: 20px; transition: 0.2s; }
         .ready { background: #333; }
         .sending { background: #10b981; }
         .success { background: #000; }
@@ -25,93 +17,63 @@
     </style>
 </head>
 <body>
-
-    <div id="video-container">
-        <video id="qr-video" playsinline autoplay muted></video>
-        <div class="aim-box"></div> <!-- 조준 박스 -->
-    </div>
-    
-    <div id="result-card" class="ready">엔진 로딩 중...</div>
+    <video id="video"></video>
+    <div id="result-card" class="ready">스캔 준비 완료</div>
 
     <script>
         const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
-        
-        const video = document.getElementById('qr-video');
+        const codeReader = new ZXing.BrowserQRCodeReader();
         const resultCard = document.getElementById('result-card');
         
         let isProcessing = false;
         let lastScanned = "";
-        let uiResetTimer = null;
-        let qrScanner = null;
 
-        // 스캔 데이터 처리
-        async function handleDetection(text) {
-            clearTimeout(uiResetTimer);
-            uiResetTimer = setTimeout(() => {
-                if (!isProcessing) {
-                    resultCard.className = "ready";
-                    resultCard.innerText = "QR 코드를 비춰주세요";
-                }
-            }, 1500);
-
-            if (isProcessing) return;
-
-            // 중복 스캔 시: 대고 있는 동안 계속 에러창 유지
-            if (text === lastScanned) {
+        async function startScanning() {
+            try {
+                // 후면 카메라 우선 선택
+                const devices = await codeReader.listVideoInputDevices();
+                const deviceId = devices.length > 0 ? devices[devices.length - 1].deviceId : undefined;
+                
+                codeReader.decodeFromVideoDevice(deviceId, 'video', (result, err) => {
+                    if (result) {
+                        handleScan(result.text);
+                    }
+                });
+            } catch (err) {
+                resultCard.innerText = "카메라 권한 오류";
                 resultCard.className = "error";
-                resultCard.innerText = "⚠️ 중복 스캔!\n방금 전송한 제품입니다.";
-                return; 
             }
+        }
 
+        async function handleScan(text) {
+            if (isProcessing || text === lastScanned) return;
+            
             isProcessing = true;
             lastScanned = text;
             
             resultCard.className = "sending";
-            resultCard.innerText = "⏳ 전송 중...\n" + text;
+            resultCard.innerText = "전송 중...";
 
             try {
                 const response = await fetch(GOOGLE_SCRIPT_URL + "?text=" + encodeURIComponent(text));
                 if (response.ok) {
                     resultCard.className = "success";
-                    resultCard.innerText = "✅ 저장 완료!";
-                } else {
-                    throw new Error("서버 오류");
+                    resultCard.innerText = "✅ 성공!";
+                    setTimeout(() => { 
+                        isProcessing = false; 
+                        resultCard.className = "ready";
+                        resultCard.innerText = "다음 스캔...";
+                    }, 800);
                 }
             } catch (err) {
                 resultCard.className = "error";
-                resultCard.innerText = "❌ 전송 실패 (재시도 요망)";
-                lastScanned = ""; 
-            } finally {
-                setTimeout(() => { isProcessing = false; }, 800);
+                resultCard.innerText = "오류 발생";
+                isProcessing = false;
+                lastScanned = "";
             }
         }
 
-        // WASM 스캐너 가동
-        function startScanner() {
-            // QrScanner는 내부적으로 zxing-cpp(WASM)를 사용하여 압도적인 해독력을 가집니다.
-            qrScanner = new QrScanner(
-                video,
-                result => handleDetection(result.data),
-                {
-                    preferredCamera: 'environment',
-                    maxScansPerSecond: 30,
-                    // 고밀도 QR을 읽기 위해 엔진에 원본 해상도를 그대로 전달
-                    calculateScanRegion: video => ({
-                        x: 0, y: 0, width: video.videoWidth, height: video.videoHeight
-                    })
-                }
-            );
-
-            qrScanner.start().then(() => {
-                resultCard.className = "ready";
-                resultCard.innerText = "QR 코드를 비춰주세요";
-            }).catch(err => {
-                resultCard.className = "error";
-                resultCard.innerText = "카메라 권한을 허용해주세요.";
-            });
-        }
-
-        window.onload = startScanner;
+        startScanning();
     </script>
 </body>
 </html>
