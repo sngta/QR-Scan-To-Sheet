@@ -4,12 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SNGTA 초고속 스캐너</title>
-    <!-- Zxing 라이브러리 불러오기 -->
     <script src="https://unpkg.com/@zxing/library@latest"></script>
     <style>
         body { margin: 0; background: #000; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
         #video { width: 100%; height: 70vh; object-fit: cover; }
-        #result-card { flex: 1; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.5rem; font-weight: bold; padding: 20px; transition: 0.2s; }
+        #result-card { flex: 1; display: flex; align-items: center; justify-content: center; color: #fff; font-size: 1.5rem; font-weight: bold; padding: 20px; transition: 0.2s; white-space: pre-wrap; text-align: center; }
         .ready { background: #333; }
         .sending { background: #10b981; }
         .success { background: #000; }
@@ -30,14 +29,10 @@
 
         async function startScanning() {
             try {
-                // 후면 카메라 우선 선택
                 const devices = await codeReader.listVideoInputDevices();
                 const deviceId = devices.length > 0 ? devices[devices.length - 1].deviceId : undefined;
-                
                 codeReader.decodeFromVideoDevice(deviceId, 'video', (result, err) => {
-                    if (result) {
-                        handleScan(result.text);
-                    }
+                    if (result) handleScan(result.text);
                 });
             } catch (err) {
                 resultCard.innerText = "카메라 권한 오류";
@@ -46,13 +41,22 @@
         }
 
         async function handleScan(text) {
-            if (isProcessing || text === lastScanned) return;
+            // 중복 스캔 시 시각적 경고
+            if (text === lastScanned) {
+                if (resultCard.className !== "error") {
+                    resultCard.className = "error";
+                    resultCard.innerText = "⚠️ 중복 스캔!\n방금 전송한 제품입니다.";
+                }
+                return; 
+            }
+            
+            if (isProcessing) return;
             
             isProcessing = true;
             lastScanned = text;
             
             resultCard.className = "sending";
-            resultCard.innerText = "전송 중...";
+            resultCard.innerText = "전송 중...\n" + text;
 
             try {
                 const response = await fetch(GOOGLE_SCRIPT_URL + "?text=" + encodeURIComponent(text));
@@ -69,7 +73,7 @@
                 resultCard.className = "error";
                 resultCard.innerText = "오류 발생";
                 isProcessing = false;
-                lastScanned = "";
+                lastScanned = ""; // 에러시엔 기억 초기화
             }
         }
 
