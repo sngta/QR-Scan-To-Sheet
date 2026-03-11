@@ -6,138 +6,355 @@
     <title>QR+SC</title>
     <script src="https://unpkg.com/@zxing/library@latest"></script>
     <style>
-        :root { --brand-color: #10b981; }
-        body { margin: 0; background: #000; font-family: -apple-system, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
-        
-        /* 비디오 영역 최적화 */
-        #video-container { position: relative; width: 100%; height: 65vh; background: #000; overflow: hidden; }
-        #video { width: 100%; height: 100%; object-fit: cover; }
-        
-        /* 스캔 가이드라인 (인식률 향상의 핵심: 사용자가 코드를 중앙에 맞추게 유도) */
-        .scanner-laser {
-            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            width: 250px; height: 250px; border: 2px solid rgba(255,255,255,0.3); border-radius: 20px;
-        }
-        .scanner-laser::after {
-            content: ""; position: absolute; top: 50%; left: 10%; width: 80%; height: 2px;
-            background: var(--brand-color); box-shadow: 0 0 15px var(--brand-color);
-            animation: laser 2s infinite;
-        }
-        @keyframes laser { 0%, 100% { top: 20%; } 50% { top: 80%; } }
+        :root { --brand: #10b981; --brand-dim: #065f46; }
+        * { box-sizing: border-box; }
+        body { margin: 0; background: #000; font-family: -apple-system, sans-serif; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
 
-        /* 결과 카드 디자인 */
+        /* ── 뷰파인더 ── */
+        #video-container { position: relative; width: 100%; height: 65vh; background: #000; overflow: hidden; }
+        #video { width: 100%; height: 100%; object-fit: cover; display: block; }
+        /* 보조 캔버스 – 실제 화면에 보이지 않음, 프리프로세싱 전용 */
+        #proc-canvas { display: none; }
+
+        /* 스캔 가이드 박스 */
+        .guide-box {
+            position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            width: 260px; height: 260px; border-radius: 20px;
+            border: 2px solid rgba(255,255,255,0.25);
+            pointer-events: none;
+        }
+        /* 네 모서리 강조 */
+        .guide-box::before, .guide-box::after,
+        .guide-corner-br, .guide-corner-bl {
+            content: ""; position: absolute; width: 24px; height: 24px; border-color: var(--brand); border-style: solid;
+        }
+        .guide-box::before  { top: -2px;  left: -2px;  border-width: 3px 0 0 3px; border-radius: 8px 0 0 0; }
+        .guide-box::after   { top: -2px;  right: -2px; border-width: 3px 3px 0 0; border-radius: 0 8px 0 0; }
+        .guide-corner-br    { bottom: -2px; right: -2px; border-width: 0 3px 3px 0; border-radius: 0 0 8px 0; }
+        .guide-corner-bl    { bottom: -2px; left: -2px;  border-width: 0 0 3px 3px; border-radius: 0 0 0 8px; }
+        /* 레이저 */
+        .laser {
+            position: absolute; top: 30%; left: 10%; width: 80%; height: 2px;
+            background: var(--brand); box-shadow: 0 0 12px var(--brand);
+            animation: sweep 1.8s ease-in-out infinite;
+        }
+        @keyframes sweep { 0%,100% { top: 15%; } 50% { top: 82%; } }
+
+        /* 엔진 뱃지 */
+        #engine-badge {
+            position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.55); backdrop-filter: blur(6px);
+            color: #fff; font-size: 0.65rem; padding: 3px 10px; border-radius: 20px;
+            letter-spacing: 0.5px; pointer-events: none;
+        }
+
+        /* 컨트롤 버튼 행 */
+        #controls {
+            position: absolute; top: 12px; right: 12px;
+            display: flex; flex-direction: column; gap: 8px;
+        }
+        .ctrl-btn {
+            width: 42px; height: 42px; border-radius: 50%;
+            background: rgba(0,0,0,0.5); backdrop-filter: blur(8px);
+            border: 1.5px solid rgba(255,255,255,0.2);
+            color: #fff; font-size: 1.2rem; cursor: pointer;
+            display: flex; align-items: center; justify-content: center;
+            transition: background 0.2s;
+        }
+        .ctrl-btn.active { background: var(--brand); border-color: var(--brand); }
+
+        /* 줌 슬라이더 */
+        #zoom-wrap {
+            position: absolute; bottom: 46px; left: 50%; transform: translateX(-50%);
+            display: flex; align-items: center; gap: 8px;
+            background: rgba(0,0,0,0.5); backdrop-filter: blur(8px);
+            padding: 6px 14px; border-radius: 20px;
+        }
+        #zoom-wrap label { color: rgba(255,255,255,0.7); font-size: 0.7rem; }
+        #zoom-range { width: 120px; accent-color: var(--brand); }
+
+        /* 결과 카드 */
         #result-card {
             flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-            color: #fff; padding: 20px; text-align: center; transition: all 0.3s;
+            color: #fff; padding: 20px; text-align: center; transition: background 0.25s;
         }
-        .ready { background: #1a1a1a; }
-        .sending { background: var(--brand-color); animation: pulse 1s infinite; }
+        .ready   { background: #111; }
+        .sending { background: var(--brand); animation: pulse 0.9s infinite; }
         .success { background: #059669; }
-        .error { background: #dc2626; }
-        
-        .code-text { font-size: 1.8rem; font-weight: 900; margin-top: 10px; letter-spacing: -0.5px; }
-        .status-text { font-size: 1rem; opacity: 0.8; text-transform: uppercase; }
+        .error   { background: #dc2626; }
+        @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.65} }
 
-        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
+        .status-text { font-size: 0.75rem; letter-spacing: 2px; text-transform: uppercase; opacity: 0.7; }
+        .code-text   { font-size: 1.7rem; font-weight: 900; margin-top: 8px; letter-spacing: -0.5px; word-break: break-all; }
     </style>
 </head>
 <body>
-    <div id="video-container">
-        <video id="video"></video>
-        <div class="scanner-laser"></div>
+
+<div id="video-container">
+    <video id="video" playsinline autoplay muted></video>
+    <canvas id="proc-canvas"></canvas>
+
+    <div class="guide-box">
+        <div class="guide-corner-br"></div>
+        <div class="guide-corner-bl"></div>
+        <div class="laser"></div>
     </div>
-    
-    <div id="result-card" class="ready">
-        <div class="status-text" id="status">SCANNER READY</div>
-        <div class="code-text" id="code-display">대기 중...</div>
+
+    <div id="engine-badge">엔진 초기화 중…</div>
+
+    <div id="controls">
+        <button class="ctrl-btn" id="torch-btn" title="손전등">🔦</button>
     </div>
 
-    <script>
-        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
-        
-        // 1. MultiFormatReader 사용 (QR뿐만 아니라 산업용 Data Matrix까지 스캔)
-        const codeReader = new ZXing.BrowserMultiFormatReader();
-        const videoElement = document.getElementById('video');
-        const resultCard = document.getElementById('result-card');
-        const statusText = document.getElementById('status');
-        const codeDisplay = document.getElementById('code-display');
-        
-        let isProcessing = false;
-        let lastScanned = "";
+    <div id="zoom-wrap">
+        <label>ZOOM</label>
+        <input type="range" id="zoom-range" min="1" max="4" step="0.1" value="1">
+        <label id="zoom-val">×1.0</label>
+    </div>
+</div>
 
-        async function startScanning() {
-            try {
-                // 2. 고밀도 인식을 위한 FHD 해상도 및 초점 강제 설정
-                const constraints = {
-                    video: {
-                        facingMode: "environment",
-                        width: { ideal: 1920 },
-                        height: { ideal: 1080 },
-                        // 아이폰 등 최신 기기에서 연속 자동 초점 기능 활용
-                        advanced: [{ focusMode: "continuous" }]
-                    }
-                };
+<div id="result-card" class="ready">
+    <div class="status-text" id="status">SCANNER READY</div>
+    <div class="code-text" id="code-display">대기 중…</div>
+</div>
 
-                // 3. 최적화된 스트림으로 디코딩 시작
-                codeReader.decodeFromConstraints(constraints, 'video', (result, err) => {
-                    if (result && !isProcessing) {
-                        handleScan(result.text);
-                    }
-                });
-            } catch (err) {
-                updateUI("error", "카메라 오류", "권한을 허용해주세요.");
+<script>
+/* ═══════════════════════════════════════════════════
+   설정값
+═══════════════════════════════════════════════════ */
+const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
+
+/* ═══════════════════════════════════════════════════
+   DOM
+═══════════════════════════════════════════════════ */
+const videoEl      = document.getElementById('video');
+const procCanvas   = document.getElementById('proc-canvas');
+const ctx          = procCanvas.getContext('2d', { willReadFrequently: true });
+const resultCard   = document.getElementById('result-card');
+const statusText   = document.getElementById('status');
+const codeDisplay  = document.getElementById('code-display');
+const engineBadge  = document.getElementById('engine-badge');
+const torchBtn     = document.getElementById('torch-btn');
+const zoomRange    = document.getElementById('zoom-range');
+const zoomVal      = document.getElementById('zoom-val');
+
+/* ═══════════════════════════════════════════════════
+   상태
+═══════════════════════════════════════════════════ */
+let isProcessing = false;
+let lastScanned  = "";
+let torchOn      = false;
+let videoTrack   = null;
+
+/* ═══════════════════════════════════════════════════
+   1. ZXing – tryHarder + 다중 포맷 힌트 설정
+   ※ tryHarder: 고밀도/손상 코드 인식 시 가장 효과적인 단일 옵션
+═══════════════════════════════════════════════════ */
+const hints = new Map();
+hints.set(ZXing.DecodeHintType.TRY_HARDER, true);                  // ★ 핵심 – 고밀도 코드
+hints.set(ZXing.DecodeHintType.PURE_BARCODE, false);               // 배경과 섞인 코드도 허용
+hints.set(ZXing.DecodeHintType.POSSIBLE_FORMATS, [
+    ZXing.BarcodeFormat.QR_CODE,
+    ZXing.BarcodeFormat.DATA_MATRIX,                               // 산업용 Data Matrix
+    ZXing.BarcodeFormat.PDF_417,
+    ZXing.BarcodeFormat.AZTEC,
+    ZXing.BarcodeFormat.CODE_128,
+    ZXing.BarcodeFormat.CODE_39,
+]);
+
+const zxingReader = new ZXing.BrowserMultiFormatReader(hints);
+
+/* ═══════════════════════════════════════════════════
+   2. 네이티브 BarcodeDetector API (iOS 17+ Safari 지원)
+   – 네이티브 처리로 ZXing 대비 2~3× 빠름
+═══════════════════════════════════════════════════ */
+let nativeDetector = null;
+if ('BarcodeDetector' in window) {
+    try {
+        nativeDetector = new BarcodeDetector({
+            formats: ['qr_code', 'data_matrix', 'pdf417', 'aztec',
+                      'code_128', 'code_39', 'code_93']
+        });
+        engineBadge.textContent = "ENGINE: Native + ZXing (듀얼)";
+    } catch(e) {
+        engineBadge.textContent = "ENGINE: ZXing (TryHarder)";
+    }
+} else {
+    engineBadge.textContent = "ENGINE: ZXing (TryHarder)";
+}
+
+/* ═══════════════════════════════════════════════════
+   3. 캔버스 프리프로세싱 – 대비 강화
+   고밀도 코드는 인쇄 품질이 낮거나 조명이 불균등할 때
+   threshold 처리로 인식률이 크게 오름
+═══════════════════════════════════════════════════ */
+function preprocessFrame() {
+    const vw = videoEl.videoWidth;
+    const vh = videoEl.videoHeight;
+    if (!vw || !vh) return null;
+
+    procCanvas.width  = vw;
+    procCanvas.height = vh;
+
+    // 원본 프레임 그리기
+    ctx.drawImage(videoEl, 0, 0, vw, vh);
+
+    // 이미지 데이터 추출 후 대비 강화 (어두운 모듈 → 완전 흑, 밝은 배경 → 완전 백)
+    const imageData = ctx.getImageData(0, 0, vw, vh);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+        // 그레이스케일 변환
+        const gray = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+        // 적응형 임계값 (128 기준 이진화 → 고밀도 모듈 선명화)
+        const bin = gray < 140 ? 0 : 255;
+        data[i] = data[i+1] = data[i+2] = bin;
+    }
+    ctx.putImageData(imageData, 0, 0);
+    return procCanvas;
+}
+
+/* ═══════════════════════════════════════════════════
+   4. 스캔 루프 – Native 우선, ZXing 후순위 병렬 시도
+═══════════════════════════════════════════════════ */
+async function scanLoop() {
+    if (isProcessing) { requestAnimationFrame(scanLoop); return; }
+
+    // 4-A. 네이티브 BarcodeDetector (원본 영상 → 가장 빠름)
+    if (nativeDetector) {
+        try {
+            const barcodes = await nativeDetector.detect(videoEl);
+            if (barcodes.length > 0) {
+                handleScan(barcodes[0].rawValue, "Native");
+                requestAnimationFrame(scanLoop);
+                return;
             }
-        }
+        } catch(e) { /* 무시 */ }
+    }
 
-        async function handleScan(text) {
-            // 중복 스캔 방지 로직 (성능 최적화)
-            if (text === lastScanned) {
-                if (resultCard.className !== "error") {
-                    updateUI("error", "중복 스캔 경고", "방금 처리된 코드입니다.");
-                    setTimeout(() => resetUI(), 2000);
-                }
-                return; 
+    // 4-B. ZXing – 전처리 캔버스 이미지 사용
+    const canvas = preprocessFrame();
+    if (canvas) {
+        try {
+            const result = zxingReader.decodeFromCanvas(canvas);
+            if (result) {
+                handleScan(result.getText(), "ZXing");
             }
-            
-            isProcessing = true;
-            lastScanned = text;
-            updateUI("sending", "전송 중...", text);
+        } catch(e) { /* 디코딩 실패 시 무시 */ }
+    }
 
-            try {
-                // 구글 시트 전송
-                const response = await fetch(`${GOOGLE_SCRIPT_URL}?text=${encodeURIComponent(text)}`);
-                if (response.ok) {
-                    updateUI("success", "전송 완료", text);
-                    // 성공 시 햅틱 진동 (아이폰/안드로이드 지원 기기)
-                    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-                    
-                    setTimeout(() => {
-                        isProcessing = false;
-                        resetUI();
-                    }, 1200);
-                }
-            } catch (err) {
-                updateUI("error", "전송 실패", "네트워크를 확인하세요.");
-                isProcessing = false;
-                lastScanned = "";
+    requestAnimationFrame(scanLoop);
+}
+
+/* ═══════════════════════════════════════════════════
+   카메라 스트림 시작
+═══════════════════════════════════════════════════ */
+async function startCamera() {
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+            video: {
+                facingMode: "environment",
+                width:  { ideal: 3840 },   // 아이폰 17 4K 지원 → 고밀도 픽셀 확보
+                height: { ideal: 2160 },
+                frameRate: { ideal: 60 },
             }
-        }
+        });
+        videoEl.srcObject = stream;
+        videoTrack = stream.getVideoTracks()[0];
 
-        function updateUI(state, status, code) {
-            resultCard.className = state;
-            statusText.innerText = status;
-            codeDisplay.innerText = code;
-        }
+        videoEl.addEventListener('loadedmetadata', () => {
+            videoEl.play();
+            updateZoomCapabilities();
+            scanLoop();   // 루프 시작
+        });
 
-        function resetUI() {
-            if (isProcessing) return;
-            resultCard.className = "ready";
-            statusText.innerText = "SCANNER READY";
-            codeDisplay.innerText = "다음 스캔 대기 중...";
-        }
+    } catch(err) {
+        updateUI("error", "카메라 오류", "권한을 허용해주세요.");
+    }
+}
 
-        // 앱 구동
-        startScanning();
-    </script>
+/* ═══════════════════════════════════════════════════
+   줌 제어
+═══════════════════════════════════════════════════ */
+async function updateZoomCapabilities() {
+    if (!videoTrack) return;
+    const caps = videoTrack.getCapabilities();
+    if (caps.zoom) {
+        zoomRange.min   = caps.zoom.min;
+        zoomRange.max   = Math.min(caps.zoom.max, 6);
+        zoomRange.step  = caps.zoom.step || 0.1;
+        zoomRange.value = 1;
+    }
+}
+
+zoomRange.addEventListener('input', async () => {
+    const z = parseFloat(zoomRange.value);
+    zoomVal.textContent = `×${z.toFixed(1)}`;
+    if (videoTrack) {
+        try { await videoTrack.applyConstraints({ advanced: [{ zoom: z }] }); }
+        catch(e) {}
+    }
+});
+
+/* ═══════════════════════════════════════════════════
+   손전등 제어
+═══════════════════════════════════════════════════ */
+torchBtn.addEventListener('click', async () => {
+    if (!videoTrack) return;
+    const caps = videoTrack.getCapabilities();
+    if (!caps.torch) { torchBtn.textContent = "⚠️"; return; }
+    torchOn = !torchOn;
+    await videoTrack.applyConstraints({ advanced: [{ torch: torchOn }] });
+    torchBtn.classList.toggle('active', torchOn);
+});
+
+/* ═══════════════════════════════════════════════════
+   스캔 처리 및 구글 시트 전송
+═══════════════════════════════════════════════════ */
+async function handleScan(text, engine) {
+    if (text === lastScanned) {
+        if (resultCard.className !== "error") {
+            updateUI("error", "중복 스캔", "방금 처리된 코드입니다.");
+            setTimeout(resetUI, 2000);
+        }
+        return;
+    }
+
+    isProcessing = true;
+    lastScanned  = text;
+    engineBadge.textContent = `SCANNED BY: ${engine}`;
+    updateUI("sending", "전송 중…", text);
+
+    try {
+        const res = await fetch(`${GOOGLE_SCRIPT_URL}?text=${encodeURIComponent(text)}`);
+        if (res.ok) {
+            updateUI("success", "전송 완료", text);
+            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+            setTimeout(() => { isProcessing = false; resetUI(); }, 1200);
+        } else {
+            throw new Error("HTTP " + res.status);
+        }
+    } catch(err) {
+        updateUI("error", "전송 실패", "네트워크를 확인하세요.");
+        isProcessing = false;
+        lastScanned  = "";
+    }
+}
+
+function updateUI(state, status, code) {
+    resultCard.className = state;
+    statusText.textContent  = status;
+    codeDisplay.textContent = code;
+}
+
+function resetUI() {
+    if (isProcessing) return;
+    resultCard.className    = "ready";
+    statusText.textContent  = "SCANNER READY";
+    codeDisplay.textContent = "다음 스캔 대기 중…";
+}
+
+/* 앱 구동 */
+startCamera();
+</script>
 </body>
 </html>
