@@ -7,12 +7,13 @@
     <script src="https://unpkg.com/@zxing/library@latest"></script>
     <style>
         :root { --brand-color: #10b981; }
-        body { margin: 0; background: #000; font-family: -apple-system, sans-serif; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
-
+        body { margin: 0; background: #000; font-family: -apple-system, sans-serif; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        
+        /* 비디오 영역 최적화 */
         #video-container { position: relative; width: 100%; height: 65vh; background: #000; overflow: hidden; }
-        #video { width: 100%; height: 100%; object-fit: cover; display: block; }
-        #proc-canvas { display: none; }
-
+        #video { width: 100%; height: 100%; object-fit: cover; }
+        
+        /* 스캔 가이드라인 (인식률 향상의 핵심: 사용자가 코드를 중앙에 맞추게 유도) */
         .scanner-laser {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
             width: 250px; height: 250px; border: 2px solid rgba(255,255,255,0.3); border-radius: 20px;
@@ -24,188 +25,119 @@
         }
         @keyframes laser { 0%, 100% { top: 20%; } 50% { top: 80%; } }
 
+        /* 결과 카드 디자인 */
         #result-card {
             flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
-            color: #fff; padding: 20px; text-align: center; transition: background 0.25s;
+            color: #fff; padding: 20px; text-align: center; transition: all 0.3s;
         }
-        .ready   { background: #1a1a1a; }
+        .ready { background: #1a1a1a; }
         .sending { background: var(--brand-color); animation: pulse 1s infinite; }
         .success { background: #059669; }
-        .error   { background: #dc2626; }
-
-        .code-text   { font-size: 1.8rem; font-weight: 900; margin-top: 10px; letter-spacing: -0.5px; word-break: break-all; }
+        .error { background: #dc2626; }
+        
+        .code-text { font-size: 1.8rem; font-weight: 900; margin-top: 10px; letter-spacing: -0.5px; }
         .status-text { font-size: 1rem; opacity: 0.8; text-transform: uppercase; }
 
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
     </style>
 </head>
 <body>
     <div id="video-container">
-        <video id="video" playsinline autoplay muted></video>
-        <canvas id="proc-canvas"></canvas>
+        <video id="video"></video>
         <div class="scanner-laser"></div>
     </div>
-
+    
     <div id="result-card" class="ready">
         <div class="status-text" id="status">SCANNER READY</div>
-        <div class="code-text" id="code-display">대기 중…</div>
+        <div class="code-text" id="code-display">대기 중...</div>
     </div>
 
-<script>
-const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
+    <script>
+        const GOOGLE_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbwrmz0rU5gl8IPZ9ZWd57NtyI7Q9mjEeFbHaJ8pX-waba83n5BJ0kGaWZCx7D330teZYw/exec";
+        
+        // 1. MultiFormatReader 사용 (QR뿐만 아니라 산업용 Data Matrix까지 스캔)
+        const codeReader = new ZXing.BrowserMultiFormatReader();
+        const videoElement = document.getElementById('video');
+        const resultCard = document.getElementById('result-card');
+        const statusText = document.getElementById('status');
+        const codeDisplay = document.getElementById('code-display');
+        
+        let isProcessing = false;
+        let lastScanned = "";
 
-const videoEl     = document.getElementById('video');
-const procCanvas  = document.getElementById('proc-canvas');
-const ctx         = procCanvas.getContext('2d', { willReadFrequently: true });
-const resultCard  = document.getElementById('result-card');
-const statusText  = document.getElementById('status');
-const codeDisplay = document.getElementById('code-display');
-
-let isProcessing = false;
-let lastScanned  = "";
-
-/* ─────────────────────────────────────────
-   ZXing 힌트 최적화
-   ① TRY_HARDER   : 고밀도/손상 코드에서 추가 디코딩 패스 수행 (가장 중요)
-   ② ALSO_INVERTED: 정방향 + 반전 패턴 둘 다 시도
-   ③ PURE_BARCODE  : false → 배경과 섞인 실물 라벨 대응
-   ④ CHARACTER_SET : UTF-8 강제 → 한국어 포함 텍스트 깨짐 방지
-───────────────────────────────────────── */
-const hints = new Map([
-    [ZXing.DecodeHintType.TRY_HARDER,    true],
-    [ZXing.DecodeHintType.ALSO_INVERTED, true],
-    [ZXing.DecodeHintType.PURE_BARCODE,  false],
-    [ZXing.DecodeHintType.CHARACTER_SET, "UTF-8"],
-    [ZXing.DecodeHintType.POSSIBLE_FORMATS, [
-        ZXing.BarcodeFormat.QR_CODE,
-        ZXing.BarcodeFormat.DATA_MATRIX,
-        ZXing.BarcodeFormat.PDF_417,
-        ZXing.BarcodeFormat.AZTEC,
-        ZXing.BarcodeFormat.CODE_128,
-        ZXing.BarcodeFormat.CODE_39,
-    ]],
-]);
-
-const codeReader = new ZXing.BrowserMultiFormatReader(hints);
-
-/* ─────────────────────────────────────────
-   캔버스 프리프로세싱
-   – ZXing에 원본 대신 이진화 이미지를 공급
-   – 인쇄 품질이 낮거나 조명이 불균등한 라벨에서 인식률 향상
-   – 임계값 140: 모듈 뭉개짐과 배경 노이즈 사이의 실측 최적값
-───────────────────────────────────────── */
-function getProcessedCanvas() {
-    const w = videoEl.videoWidth;
-    const h = videoEl.videoHeight;
-    if (!w || !h) return null;
-
-    procCanvas.width  = w;
-    procCanvas.height = h;
-    ctx.drawImage(videoEl, 0, 0, w, h);
-
-    const imgData = ctx.getImageData(0, 0, w, h);
-    const d = imgData.data;
-    for (let i = 0; i < d.length; i += 4) {
-        const gray = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        const bin  = gray < 140 ? 0 : 255;
-        d[i] = d[i + 1] = d[i + 2] = bin;
-    }
-    ctx.putImageData(imgData, 0, 0);
-    return procCanvas;
-}
-
-/* ─────────────────────────────────────────
-   스캔 루프
-   – RAF 기반으로 매 프레임 ZXing 디코딩 시도
-   – decodeFromCanvas: 전처리된 이진화 이미지를 직접 입력
-   – isProcessing 플래그로 전송 중 불필요한 디코딩 차단
-───────────────────────────────────────── */
-function scanLoop() {
-    if (!isProcessing) {
-        const canvas = getProcessedCanvas();
-        if (canvas) {
+        async function startScanning() {
             try {
-                const result = codeReader.decodeFromCanvas(canvas);
-                if (result) handleScan(result.getText());
-            } catch (e) { /* 디코딩 미성공 – 정상 */ }
-        }
-    }
-    requestAnimationFrame(scanLoop);
-}
+                // 2. 고밀도 인식을 위한 FHD 해상도 및 초점 강제 설정
+                const constraints = {
+                    video: {
+                        facingMode: "environment",
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 },
+                        // 아이폰 등 최신 기기에서 연속 자동 초점 기능 활용
+                        advanced: [{ focusMode: "continuous" }]
+                    }
+                };
 
-/* ─────────────────────────────────────────
-   카메라 초기화
-   – 4K 요청: 고밀도 QR 1픽셀당 센서 픽셀 수 극대화
-   – focusMode continuous: 연속 자동초점
-   – frameRate 60: RAF 루프 활용도 극대화
-───────────────────────────────────────── */
-async function startScanning() {
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-            video: {
-                facingMode: "environment",
-                width:     { ideal: 3840 },
-                height:    { ideal: 2160 },
-                frameRate: { ideal: 60 },
-                advanced:  [{ focusMode: "continuous" }],
+                // 3. 최적화된 스트림으로 디코딩 시작
+                codeReader.decodeFromConstraints(constraints, 'video', (result, err) => {
+                    if (result && !isProcessing) {
+                        handleScan(result.text);
+                    }
+                });
+            } catch (err) {
+                updateUI("error", "카메라 오류", "권한을 허용해주세요.");
             }
-        });
-        videoEl.srcObject = stream;
-        videoEl.addEventListener('loadedmetadata', () => {
-            videoEl.play();
-            scanLoop();
-        });
-    } catch (err) {
-        updateUI("error", "카메라 오류", "권한을 허용해주세요.");
-    }
-}
-
-/* ─────────────────────────────────────────
-   전송 및 UI
-───────────────────────────────────────── */
-async function handleScan(text) {
-    if (text === lastScanned) {
-        if (resultCard.className !== "error") {
-            updateUI("error", "중복 스캔 경고", "방금 처리된 코드입니다.");
-            setTimeout(resetUI, 2000);
         }
-        return;
-    }
 
-    isProcessing = true;
-    lastScanned  = text;
-    updateUI("sending", "전송 중…", text);
+        async function handleScan(text) {
+            // 중복 스캔 방지 로직 (성능 최적화)
+            if (text === lastScanned) {
+                if (resultCard.className !== "error") {
+                    updateUI("error", "중복 스캔 경고", "방금 처리된 코드입니다.");
+                    setTimeout(() => resetUI(), 2000);
+                }
+                return; 
+            }
+            
+            isProcessing = true;
+            lastScanned = text;
+            updateUI("sending", "전송 중...", text);
 
-    try {
-        const res = await fetch(`${GOOGLE_SCRIPT_URL}?text=${encodeURIComponent(text)}`);
-        if (res.ok) {
-            updateUI("success", "전송 완료", text);
-            if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
-            setTimeout(() => { isProcessing = false; resetUI(); }, 1200);
-        } else {
-            throw new Error("HTTP " + res.status);
+            try {
+                // 구글 시트 전송
+                const response = await fetch(`${GOOGLE_SCRIPT_URL}?text=${encodeURIComponent(text)}`);
+                if (response.ok) {
+                    updateUI("success", "전송 완료", text);
+                    // 성공 시 햅틱 진동 (아이폰/안드로이드 지원 기기)
+                    if (navigator.vibrate) navigator.vibrate([100, 50, 100]);
+                    
+                    setTimeout(() => {
+                        isProcessing = false;
+                        resetUI();
+                    }, 1200);
+                }
+            } catch (err) {
+                updateUI("error", "전송 실패", "네트워크를 확인하세요.");
+                isProcessing = false;
+                lastScanned = "";
+            }
         }
-    } catch (err) {
-        updateUI("error", "전송 실패", "네트워크를 확인하세요.");
-        isProcessing = false;
-        lastScanned  = "";
-    }
-}
 
-function updateUI(state, status, code) {
-    resultCard.className    = state;
-    statusText.textContent  = status;
-    codeDisplay.textContent = code;
-}
+        function updateUI(state, status, code) {
+            resultCard.className = state;
+            statusText.innerText = status;
+            codeDisplay.innerText = code;
+        }
 
-function resetUI() {
-    if (isProcessing) return;
-    resultCard.className    = "ready";
-    statusText.textContent  = "SCANNER READY";
-    codeDisplay.textContent = "다음 스캔 대기 중…";
-}
+        function resetUI() {
+            if (isProcessing) return;
+            resultCard.className = "ready";
+            statusText.innerText = "SCANNER READY";
+            codeDisplay.innerText = "다음 스캔 대기 중...";
+        }
 
-startScanning();
-</script>
+        // 앱 구동
+        startScanning();
+    </script>
 </body>
 </html>
