@@ -100,10 +100,10 @@
             overflow: hidden;
         }
 
-        #card.ready   { background: var(--card-bg); }
-        #card.sending { background: #0d2e22; }
-        #card.success { background: #0a2e1e; }
-        #card.error   { background: #2a0e0e; }
+        #card.ready   { background: var(--card-bg); border: 1px solid transparent; }
+        #card.sending { background: #271a00; border: 1px solid rgba(251,191,36,0.3); }
+        #card.success { background: #052e16; border: 1px solid rgba(16,185,129,0.4); }
+        #card.error   { background: #2a0e0e; border: 1px solid rgba(248,113,113,0.25); }
 
         #label {
             font-size: 0.6rem;
@@ -123,8 +123,8 @@
             transition: color 0.2s;
         }
 
-        #card.sending #code { color: var(--mint); }
-        #card.success #code { color: var(--mint); }
+        #card.sending #code { color: #fbbf24; }
+        #card.success #code { color: #34d399; }
         #card.error   #code { color: #f87171; }
 
         /* 전송 중 점 애니메이션 */
@@ -132,6 +132,9 @@
         .dot:nth-child(2) { animation-delay: 0.2s; }
         .dot:nth-child(3) { animation-delay: 0.4s; }
         @keyframes blink { 0%,80%,100%{opacity:0} 40%{opacity:1} }
+
+        #dots { display: none; margin-left: 4px; color: #fbbf24; }
+        #card.sending #dots { display: inline; }
 
         /* 하단 힌트 */
         #hint {
@@ -159,7 +162,7 @@
 
 <div id="card" class="ready">
     <div id="label">ready to scan</div>
-    <div id="code">대기 중</div>
+    <div id="code">대기 중<span id="dots"><span class="dot">·</span><span class="dot">·</span><span class="dot">·</span></span></div>
     <div id="hint">frame the code · hold steady</div>
 </div>
 
@@ -173,6 +176,9 @@ const label    = document.getElementById('label');
 const codeEl   = document.getElementById('code');
 const hint     = document.getElementById('hint');
 const frameBox = document.getElementById('frame-box');
+const dotsEl   = document.getElementById('dots');
+
+const dotsEl  = document.getElementById('dots');
 
 let isProcessing = false;
 let lastScanned  = "";
@@ -182,10 +188,11 @@ function setState(state, labelText, codeText, hintText = "") {
     card.className = state;
     label.textContent = labelText;
     hint.textContent  = hintText;
-    if (state === "sending") {
-        codeEl.innerHTML = `${codeText} <span class="dot">·</span><span class="dot">·</span><span class="dot">·</span>`;
+    // textContent를 직접 쓰면 자식 노드(dots)가 제거되므로 firstChild 텍스트 노드만 교체
+    if (codeEl.firstChild && codeEl.firstChild.nodeType === Node.TEXT_NODE) {
+        codeEl.firstChild.textContent = codeText;
     } else {
-        codeEl.textContent = codeText;
+        codeEl.insertBefore(document.createTextNode(codeText), codeEl.firstChild);
     }
 }
 
